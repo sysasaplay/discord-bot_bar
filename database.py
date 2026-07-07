@@ -1,67 +1,61 @@
-import aiosqlite
+import sqlite3
 
-class Database:
-    def __init__(self, db_path="izakaya.db"):
-        self.db_path = db_path
+class IzakayaDB:
+    def __init__(self, db_name="izakaya.db"):
+        self.db_name = db_name
+        # Lista degli ID con privilegi speciali (Tu e Ally)
+        self.GOD_MODES = [876853397746225162, 1363915831091921098]
 
-    async def setup_tables(self):
-        """Inizializza le tabelle del database."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS economy (
+    def _connect(self):
+        return sqlite3.connect(self.db_name)
+
+    def setup(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
-                    yen INTEGER DEFAULT 0
+                    balance INTEGER DEFAULT 500
                 )
             """)
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS cooldowns (
-                    user_id INTEGER PRIMARY KEY,
-                    last_daily TIMESTAMP
-                )
-            """)
-            await db.commit()
-            print(f"✅ Tabelle database inizializzate su: {self.db_path}")
+            conn.commit()
 
-    # ── Metodi Economia ───────────────────────────────────────────────────────
+    async def get_balance(self, user_id: int) -> int:
+        # Se sei tu o Ally, avete sempre 1.000.000+ Yen fissi
+        if user_id in self.GOD_MODES:
+            return 9999999
+            
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            if row is None:
+                cursor.execute("INSERT INTO users (user_id, balance) VALUES (?, 500)", (user_id,))
+                conn.commit()
+                return 500
+            return row[0]
 
-    async def get_or_create_user(self, user_id, name):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("INSERT OR IGNORE INTO economy (user_id, yen) VALUES (?, 0)", (user_id,))
-            await db.commit()
+    async def add_coins(self, user_id: int, amount: int):
+        # Inutile aggiungere monete a chi ha già fondi infiniti
+        if user_id in self.GOD_MODES:
+            return
+            
+        await self.get_balance(user_id)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            conn.commit()
 
-    async def buy_item(self, user_id, amount):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT yen FROM economy WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
-                if row and row[0] >= amount:
-                    await db.execute("UPDATE economy SET yen = yen - ? WHERE user_id = ?", (amount, user_id))
-                    await db.commit()
-                    return True
-        return False
-
-    async def update_balance(self, user_id, amount):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE economy SET yen = yen + ? WHERE user_id = ?", (amount, user_id))
-            await db.commit()
-
-    async def get_balance(self, user_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT yen FROM economy WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else 0
-
-    # ── Metodi Cooldown (Daily) ────────────────────────────────────────────────
-
-    async def get_last_daily(self, user_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT last_daily FROM cooldowns WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else None
-
-    async def update_daily_time(self, user_id, timestamp):
-        # Questo print ti confermerà se il comando /daily sta davvero chiamando questa funzione
-        print(f"DEBUG: Scrittura in DB per {user_id} -> {timestamp}")
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("INSERT OR REPLACE INTO cooldowns (user_id, last_daily) VALUES (?, ?)", (user_id, timestamp))
-            await db.commit()
-            print("DEBUG: Commit avvenuto con successo.")
+    async def buy_item(self, user_id: int, price: int) -> bool:
+        # Se sei tu o Ally, l'acquisto va a buon fine all'istante senza scalare nulla
+        if user_id in self.GOD_MODES:
+            return True
+            
+        current_balance = await self.get_balance(user_id)
+        if current_balance < price:
+            return False
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (price, user_id))
+            conn.commit()
+            return True
